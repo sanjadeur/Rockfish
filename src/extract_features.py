@@ -121,7 +121,7 @@ def process_read(
         motif: str='CG',
         index: int=0,
         window: int=8,
-        bed_pos: Optional[Set[GenomicPos]]=None) -> Optional[FeaturesData]:
+        bed_pos: Optional[BEDPos]=None) -> Optional[FeaturesData]:
     """ This function processes the given read to generate data.
 
     This function extracts resegmentation information, and extracts alignment data.
@@ -136,7 +136,7 @@ def process_read(
     :param bed_pos: Positions used for filtering motif positions
     :return: FeaturesData object if at least one example is present, otherwise None
     """
-    processor = CustomProcessor(basecall_data, reference, mapq, motif, index, window)
+    processor = CustomProcessor(basecall_data, reference, mapq, motif, index, window, bed_pos)
     resegmentation_data = processor.process()
     if not resegmentation_data:
         return
@@ -190,14 +190,14 @@ def worker_process_reads(paths: List[Path], reference: str, data_path: Path, hea
     error_files = 0
 
     with BinaryWriter(str(data_path), str(header_path)) as writer:
-        bed_pos = set(_BED_DATA.keys()) if _BED_DATA is not None else None
+        bed_pos = _BED_DATA[1] if _BED_DATA is not None else None
 
         for path in tqdm(basecall(paths)):
             try:
                 result = process_read(path, reference, _NORM_METHOD, _MAPQ, _MOTIF, _INDEX, _WINDOW, bed_pos)
 
                 if result is not None:
-                    writer.write_data(result, _BED_DATA, _INFO_ARGS['label'])
+                    writer.write_data(result, _BED_DATA[0] if _BED_DATA is not None else None, _INFO_ARGS['label'])
             except Exception as e:
                 error_callback(path, e)
                 # error_files += 1
@@ -226,12 +226,12 @@ def process_data(args: argparse.Namespace) -> None:
     last_action_time = tqdm_with_time(f'Parameters: {info_args}', last_action_time)
 
     if args.bed_path is None:
-        bed_info = None
+        bed_data = None
     else:
         last_action_time = tqdm_with_time('Extracting BED info', last_action_time)
 
         filter_method = bed_filter_factory(args.bed_filter)
-        bed_info = extract_bed_positions(args.bed_path, filter_method)
+        bed_data = extract_bed_positions(args.bed_path, filter_method)
 
     # Create output dir if it doesn't exist
     args.output_path.mkdir(parents=True, exist_ok=True)
@@ -240,7 +240,7 @@ def process_data(args: argparse.Namespace) -> None:
     info_path = Path(args.output_path, 'info.txt')
     BinaryWriter.write_extraction_info(info_path, info_args)
 
-    workers_args = (info_args, args.norm_method, args.mapq, args.motif, args.index, args.window, bed_info)
+    workers_args = (info_args, args.norm_method, args.mapq, args.motif, args.index, args.window, bed_data)
     with get_executor(args.workers, initializer=init_workers, initargs=workers_args) as executor:
         futures = []
 

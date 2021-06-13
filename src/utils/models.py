@@ -62,7 +62,9 @@ class ModInfo:
     mod_freq: int
 
 
-BEDData = Dict[GenomicPos, ModInfo]  # BED file holds modification information for genomic positions
+BEDInfo = Dict[GenomicPos, ModInfo]  # BED file holds modification information for genomic positions
+BEDPos = Dict[str, Tuple[Set[int], Set[int]]]  # Included positions - {chromosome: (fwd_pos, rev_pos)}
+BEDData = Tuple[BEDInfo, BEDPos]
 BEDPredicate = Callable[[GenomicPos, ModInfo], bool]  # Declaration for BED filter function
 
 

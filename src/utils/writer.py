@@ -127,7 +127,7 @@ class BinaryWriter(DataWriter):
         self.header_fd.flush()
         self.header_fd.close()
 
-    def write_data(self, data: FeaturesData, bed_info: Optional[BEDData]=None, label: Optional[int]=None) -> None:
+    def write_data(self, data: FeaturesData, bed_info: Optional[BEDInfo]=None, label: Optional[int]=None) -> None:
         """ Function that writes data into binary file.
 
         :param data: Generated data and alignment information for one read

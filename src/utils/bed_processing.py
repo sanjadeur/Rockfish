@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import defaultdict
 
 from typing import *
 
@@ -18,6 +19,7 @@ def extract_bed_positions(
     :return: Modification information for the positions in the given file
     """
     bed_info = {}
+    bed_positions = defaultdict(lambda: (set(), set()))
 
     with path.open('r') as f:
         for line in f:
@@ -35,7 +37,12 @@ def extract_bed_positions(
             if bed_filter is None or bed_filter(genomic_pos, mod_info):
                 bed_info[genomic_pos] = mod_info
 
-    return bed_info
+                if strand == Strand.FORWARD:
+                    bed_positions[chromosome][0].add(pos)  # Forward strand
+                else:
+                    bed_positions[chromosome][1].add(pos)  # Reverse strand
+
+    return bed_info, bed_positions
 
 
 def high_confidence_filter(

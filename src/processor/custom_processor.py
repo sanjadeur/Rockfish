@@ -6,7 +6,7 @@ from typing import Tuple, Set, List, Optional
 
 from .alignment import make_aligner, get_reference, get_motif_positions
 from .basecall import sequence_to_raw
-from .util import Interval, ResegmentationData
+from .util import Interval, BEDPos, ResegmentationData
 
 
 class CustomProcessor:
@@ -16,7 +16,8 @@ class CustomProcessor:
                  mapq: int = 0,
                  motif: str = 'CG',
                  index: int = 0,
-                 window: int = 8):
+                 window: int = 8,
+                 bed_pos: Optional[BEDPos] = None):
         self.basecall_data = basecall_data
         self.reference_file = reference_file
 
@@ -24,7 +25,7 @@ class CustomProcessor:
         self.window = window
 
         self.aligner = make_aligner(reference_file)
-        self.motif_positions = get_motif_positions(reference_file, motif, index)
+        self.motif_positions = get_motif_positions(reference_file, motif, index, bed_pos)
 
     def align(self, query: str) -> Optional[mappy.Alignment]:
         for hit in self.aligner.map(query):  # Traverse alignments
@@ -153,6 +154,7 @@ class CustomProcessor:
             reference = get_reference(self.reference_file, alignment.ctg)
             region = reference[position - self.window: position + self.window + 1]
             bases = region if alignment.strand == 1 else mappy.revcomp(region)
+            bases = bases.upper()
 
             assert len(event_intervals) == len(event_lens) == len(bases)
 

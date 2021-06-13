@@ -2,7 +2,9 @@ import mappy
 from Bio import SeqIO
 import re
 
-from typing import Tuple, Set, Dict
+from typing import Tuple, Set, Dict, Optional
+
+from .util import BEDPos
 
 
 def make_aligner(reference_file: str) -> mappy.Aligner:
@@ -13,7 +15,8 @@ def make_aligner(reference_file: str) -> mappy.Aligner:
     return aligner
 
 
-def get_motif_positions(reference_file: str, motif: str, index: int) -> Dict[str, Tuple[Set[int], Set[int]]]:
+def get_motif_positions(reference_file: str, motif: str, index: int,
+                        bed_pos: Optional[BEDPos]) -> Dict[str, Tuple[Set[int], Set[int]]]:
     chromosomes = SeqIO.to_dict(SeqIO.parse(reference_file, 'fasta'))
     motif_positions = dict()
 
@@ -27,6 +30,14 @@ def get_motif_positions(reference_file: str, motif: str, index: int) -> Dict[str
         # Reverse strand
         rev_matches = re.finditer(motif, mappy.revcomp(reference), re.I)
         rev_pos = set(len(reference) - (m.start() + index) - 1 for m in rev_matches)
+
+        if bed_pos is not None:
+            try:
+                fwd_bed, rev_bed = bed_pos[chromosome]
+                fwd_pos &= fwd_bed
+                rev_pos &= rev_bed
+            except KeyError:
+                pass
 
         motif_positions[chromosome] = fwd_pos, rev_pos
 

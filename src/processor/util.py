@@ -2,10 +2,11 @@ from collections import namedtuple
 from dataclasses import dataclass
 import numpy as np
 
-from typing import List
-
+from typing import Tuple, Set, List, Dict
 
 Interval = namedtuple('Interval', ['start', 'end'])  # Start - inclusive, end - exclusive
+
+BEDPos = Dict[str, Tuple[Set[int], Set[int]]]  # Included positions - {chromosome: (fwd_pos, rev_pos)}
 
 
 @dataclass
