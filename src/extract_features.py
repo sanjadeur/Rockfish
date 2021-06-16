@@ -1,39 +1,21 @@
-from __future__ import annotations
-
 import sys
 import time
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 import traceback
-from concurrent.futures import as_completed
-from pyguppyclient.decode import ReadData, CalledReadData
-
+import multiprocessing as mp
 import argparse
+
+from typing import List, Optional
 
 from utils.models import *
 from utils.bed_processing import bed_filter_factory, extract_bed_positions
-from utils.parallel_processing import get_executor
 from utils.writer import BinaryWriter
 
-from processor.basecall import basecall
+from processor.basecall import create_file_queue, start_producers, GuppyRead
 from processor.custom_processor import CustomProcessor
 from processor.util import Interval
-
-BATCH_SIZE = 4_000
-
-
-def get_files(path: Path, recursive: bool = False) -> List[Path]:
-    if path.is_file():
-        return [path]
-
-    # Finding all input FAST5 files
-    if recursive:
-        files = path.glob('**/*.fast5')
-    else:
-        files = path.glob('*.fast5')
-
-    return list(files)
 
 
 def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
@@ -57,7 +39,7 @@ def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
     return info_args
 
 
-def get_raw_signal(read: ReadData, event_interval: Interval, norm_method, continuous: bool=True) -> np.ndarray:
+def get_raw_signal(read: GuppyRead, event_interval: Interval, norm_method, continuous: bool=True) -> np.ndarray:
     """ Returns the raw signal for the read.
 
     Returns the raw signal for the given read. Optionally, it converts discrete signal to continuous signal.
@@ -68,7 +50,7 @@ def get_raw_signal(read: ReadData, event_interval: Interval, norm_method, contin
     :param continuous: True if returned signal should be continuous, otherwise False
     :return: Raw signal for the given read
     """
-    signal = read.signal[event_interval.start: event_interval.end]
+    signal = read.raw_data[event_interval.start: event_interval.end]
 
     if continuous:
         signal = read.daq_scaling * (signal + read.daq_offset)
@@ -80,7 +62,7 @@ def get_raw_signal(read: ReadData, event_interval: Interval, norm_method, contin
     return signal
 
 
-def generate_data(read: ReadData,
+def generate_data(read: GuppyRead,
                   reseg_data: List[ResegmentationData],
                   norm_method: str) -> Optional[List[Example]]:
     """ Function that generates data for the specified read.
@@ -113,44 +95,63 @@ def generate_data(read: ReadData,
     return all_examples
 
 
-def process_read(
-        basecall_data: Tuple[ReadData, CalledReadData],
-        reference: str,
-        norm_method: Optional[str]='standardization',
-        mapq: int = 10,
-        motif: str='CG',
-        index: int=0,
-        window: int=8,
-        bed_pos: Optional[BEDPos]=None) -> Optional[FeaturesData]:
+def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], reference: str,
+                 norm_method: str, mapq: int, motif: str, index: int, window: int,
+                 label: Optional[int], bed_data: Optional[BEDData],
+                 data_path: str, header_path: int) -> Optional[FeaturesData]:
     """ This function processes the given read to generate data.
 
     This function extracts resegmentation information, and extracts alignment data.
 
-    :param basecall_data: Basecalled data: (read, called)
+    :param read_queue: Queue containing basecalled reads
+    :param processed_queue: Queue containing processed reads
     :param reference: Path to the reference file
     :param norm_method: Signal normalization method
     :param mapq: Mapping quality threshold
     :param motif: Motif for which positions will be extracted
     :param index: Index of the central position in the motif
     :param window: Size of left and right windows around central position
-    :param bed_pos: Positions used for filtering motif positions
+    :param label: Label is 0 for unmodified reads, and 1 for modified ones
+    :param bed_data: Positions used for filtering motif positions
+    :param data_path: Path to the generated output data
+    :param header_path: Path to the generated header
     :return: FeaturesData object if at least one example is present, otherwise None
     """
-    processor = CustomProcessor(basecall_data, reference, mapq, motif, index, window, bed_pos)
-    resegmentation_data = processor.process()
-    if not resegmentation_data:
-        return
+    with BinaryWriter(str(data_path), str(header_path)) as writer:
+        while True:
+            basecall_data = read_queue.get()  # timeout=10 if needed
+            if basecall_data is None:
+                break
 
-    read, called = basecall_data
+            print(basecall_data.read.read_id, "- basecalled")
 
-    examples = generate_data(read, resegmentation_data, norm_method)
-    if not examples:
-        return
+            processor = CustomProcessor(basecall_data, reference, mapq, motif, index, window,
+                                        bed_data[1] if bed_data is not None else None)
 
-    align_data = processor.align(called.seq)
-    strand = Strand.strand_from_str('+' if align_data.strand == 1 else '-')
+            resegmentation_data = processor.process()
+            if not resegmentation_data:
+                print(basecall_data.read.read_id, "- reseg_data is None")
+                continue
 
-    return FeaturesData(align_data.ctg, strand, read.read_id, examples)
+            print(basecall_data.read.read_id, "- resegmented")
+
+            examples = generate_data(basecall_data.read, resegmentation_data, norm_method)
+            if not examples:
+                continue
+
+            align_data = processor.align(basecall_data.seq)
+            strand = Strand.strand_from_str('+' if align_data.strand == 1 else '-')
+
+            result = FeaturesData(align_data.ctg, strand, basecall_data.read.read_id, examples)
+            if result is not None:
+                try:
+                    writer.write_data(result, bed_data[0] if bed_data is not None else None, label)
+
+                except Exception as e:
+                    error_callback(basecall_data.read.read_id, e)
+                    # error_files += 1
+
+            print(basecall_data.read.read_id, "- written")
 
 
 def error_callback(path, exception):
@@ -159,50 +160,21 @@ def error_callback(path, exception):
     print(traceback.format_exc(), file=sys.stderr)
 
 
-def init_workers(
-        info_args: Dict[str, Any],
-        norm_method: Optional[str]='standardization',
-        mapq: int=10,
-        motif: str='CG',
-        index: int=0,
-        window: int=8,
-        bed_data: Optional[BEDData]=None) -> None:
-    # Initializing workers with constant arguments
-    global _INFO_ARGS, _NORM_METHOD, _MAPQ, _MOTIF, _INDEX, _WINDOW, _BED_DATA
-    _INFO_ARGS = info_args
-    _NORM_METHOD = norm_method
-    _MAPQ = mapq
-    _MOTIF = motif
-    _INDEX = index
-    _WINDOW = window
-    _BED_DATA = bed_data
+def worker_process_reads(read_queue: mp.Queue, processed_queue: mp.Queue, reference: str,
+                         norm_method: str, mapq: int, motif: str, index: int, window: int,
+                         label: Optional[int], bed_data: Optional[BEDData],
+                         output_path: str, n_processors: int) -> List[mp.Process]:
+    processors = []
 
+    args = (read_queue, processed_queue, reference, norm_method, mapq, motif, index, window, label, bed_data)
+    for i in range(n_processors):
+        p_args = args + (Path(output_path, f'{i + 1}.data.bin.tmp'), Path(output_path, f'{i + 1}.header.bin.tmp'))
+        p = mp.Process(target=process_read, args=p_args, daemon=True)
+        processors.append(p)
 
-def worker_process_reads(paths: List[Path], reference: str, data_path: Path, header_path: Path) -> Tuple[Path, int]:
-    """ Function that processes input file list and stores generated data
+        p.start()
 
-    :param paths: List of input files that will be processed
-    :param reference: Path to the reference file
-    :param data_path: Path to the generated output data
-    :param header_path: Path to the generated header
-    :return: Path and number of failed files
-    """
-    error_files = 0
-
-    with BinaryWriter(str(data_path), str(header_path)) as writer:
-        bed_pos = _BED_DATA[1] if _BED_DATA is not None else None
-
-        for path in tqdm(basecall(paths)):
-            try:
-                result = process_read(path, reference, _NORM_METHOD, _MAPQ, _MOTIF, _INDEX, _WINDOW, bed_pos)
-
-                if result is not None:
-                    writer.write_data(result, _BED_DATA[0] if _BED_DATA is not None else None, _INFO_ARGS['label'])
-            except Exception as e:
-                error_callback(path, e)
-                # error_files += 1
-
-        return data_path, error_files
+    return processors
 
 
 def tqdm_with_time(msg, last_action_time):
@@ -218,8 +190,8 @@ def process_data(args: argparse.Namespace) -> None:
     last_action_time = start_time
 
     tqdm.write('>> Generating file list')
-    files = get_files(args.input_path, args.recursive)
-    if len(files) == 0:
+    file_queue = create_file_queue(args.input_path, args.recursive, args.n_producers)
+    if file_queue is None:
         sys.exit('FAST5 file(s) not found.')
 
     info_args = get_info_args(args)
@@ -240,28 +212,24 @@ def process_data(args: argparse.Namespace) -> None:
     info_path = Path(args.output_path, 'info.txt')
     BinaryWriter.write_extraction_info(info_path, info_args)
 
-    workers_args = (info_args, args.norm_method, args.mapq, args.motif, args.index, args.window, bed_data)
-    with get_executor(args.workers, initializer=init_workers, initargs=workers_args) as executor:
-        futures = []
+    last_action_time = tqdm_with_time('Building jobs', last_action_time)
 
-        batches = (len(files) // BATCH_SIZE)
-        batches = batches if len(files) % BATCH_SIZE == 0 else batches + 1  # e.g. 8000//4000 = 2, no need for +1
+    read_queue = mp.Queue()
+    producers = start_producers(file_queue, read_queue, args.n_producers)
 
-        last_action_time = tqdm_with_time('Building jobs', last_action_time)
-        for i in tqdm(range(batches)):
-            start = i * BATCH_SIZE
-            end = min(start+BATCH_SIZE, len(files))
+    processed_queue = None
+    processors = worker_process_reads(read_queue, processed_queue, args.reference,
+                                      args.norm_method, args.mapq, args.motif, args.index, args.window,
+                                      args.label, bed_data, args.output_path, args.n_processors)
 
-            data_path = Path(args.output_path, f'{i+1}.data.bin.tmp')
-            header_path = Path(args.output_path, f'{i+1}.header.bin.tmp')
+    tqdm_with_time('Extracting features', last_action_time)
 
-            future = executor.submit(worker_process_reads, files[start:end], args.reference, data_path, header_path)
-            futures.append(future)
-
-        tqdm_with_time('Extracting features', last_action_time)
-        for future in tqdm(as_completed(futures), total=len(futures)):
-            out_path, errors = future.result()
-            tqdm.write(f'>> File {out_path}: Total {errors} errors.')
+    while True:
+        if not any(p.is_alive() for p in producers):
+            for _ in range(args.n_processors):
+                read_queue.put(None)
+        if not any(p.is_alive() for p in processors):
+            break
 
     # Concatenate files
     BinaryWriter.on_extraction_finish(path=args.output_path)
@@ -286,8 +254,8 @@ def create_arguments() -> argparse.Namespace:
     parser.add_argument('--reference', type=str, required=True,
                         help='Path to the reference file')
 
-    parser.add_argument('--norm_method', type=str, default='standardization',
-                        help='Function name to use for signal normalization (default: standardization)')
+    parser.add_argument('--norm_method', type=str, default=None,
+                        help='Function name to use for signal normalization (default: None)')
 
     parser.add_argument('--mapq', type=int, default=10,
                         help='Mapping quality threshold (default: 10)')
@@ -304,8 +272,11 @@ def create_arguments() -> argparse.Namespace:
     parser.add_argument('--label', type=int, default=None,
                         help='Label to store for the given examples (default: None)')
 
-    parser.add_argument('-t', '--workers', type=int, default=0,
-                        help='Number of workers used for data generation (default: 0)')
+    parser.add_argument('--n_producers', type=int, default=1,
+                        help='Number of producers used for data generation (default: 1)')
+
+    parser.add_argument('--n_processors', type=int, default=1,
+                        help='Number of processors used for data processing (default: 1)')
 
     # Bisulfite BED file arguments
     parser.add_argument('--bed_path', type=Path, default=None,

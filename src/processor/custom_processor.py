@@ -1,17 +1,16 @@
-from pyguppyclient.decode import ReadData, CalledReadData
 import mappy
 import numpy as np
 
 from typing import Tuple, Set, List, Optional
 
 from .alignment import make_aligner, get_reference, get_motif_positions
-from .basecall import sequence_to_raw
+from .basecall import BasecallData, sequence_to_raw
 from .util import Interval, BEDPos, ResegmentationData
 
 
 class CustomProcessor:
     def __init__(self,
-                 basecall_data: Tuple[ReadData, CalledReadData],
+                 basecall_data: BasecallData,
                  reference_file: str,
                  mapq: int = 0,
                  motif: str = 'CG',
@@ -124,9 +123,7 @@ class CustomProcessor:
         return signal_intervals
 
     def process(self) -> Optional[List[ResegmentationData]]:
-        read, called = self.basecall_data
-
-        alignment = self.align(called.seq)
+        alignment = self.align(self.basecall_data.seq)
         if not alignment:
             return None
 
@@ -134,7 +131,7 @@ class CustomProcessor:
         if not relevant_motif_positions:
             return None
 
-        seq_to_raw = sequence_to_raw(read, called)
+        seq_to_raw, raw_start_idx = sequence_to_raw(self.basecall_data)
 
         signal_intervals, deletion_idx = CustomProcessor.resolve_insertions(alignment, seq_to_raw)
         signal_intervals = CustomProcessor.resolve_deletions(signal_intervals, deletion_idx)

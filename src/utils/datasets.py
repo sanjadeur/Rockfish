@@ -38,6 +38,7 @@ class MemoryDataset(Dataset):
             window = int(f.readlines()[4].split()[1])
             self.kmer = 2 * window + 1  # Length of kmer
 
+        self.data.seek(NUM_16)
         self.signal = np.frombuffer(self.data.read(NUM_16 * self.len), dtype=np.uint16)  # Lengths of signals
         example_bytes = NUM_16 * self.signal + (NUM_16 + NUM_8) * self.kmer + NUM_8  # Lengths of examples in bytes
         self.offset = np.concatenate(([0], example_bytes)).cumsum()[:-1]  # Offsets in bytes
