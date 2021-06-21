@@ -39,18 +39,17 @@ def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
     return info_args
 
 
-def get_raw_signal(read: GuppyRead, event_interval: Interval, norm_method, continuous: bool=True) -> np.ndarray:
+def get_raw_signal(read: GuppyRead, norm_method, continuous: bool=True) -> np.ndarray:
     """ Returns the raw signal for the read.
 
     Returns the raw signal for the given read. Optionally, it converts discrete signal to continuous signal.
 
     :param read: Basecalled read
-    :param event_interval: Interval of signal points
     :param norm_method: Signal normalization method
     :param continuous: True if returned signal should be continuous, otherwise False
     :return: Raw signal for the given read
     """
-    signal = read.raw_data[event_interval.start: event_interval.end]
+    signal = read.raw_data
 
     if continuous:
         signal = read.daq_scaling * (signal + read.daq_offset)
@@ -75,13 +74,14 @@ def generate_data(read: GuppyRead,
     :param norm_method: Signal normalization method
     :return: List of generated examples for the given read and resegmentation data
     """
+    signal = get_raw_signal(read, norm_method)
     all_examples = []
 
     for reseg_example in reseg_data:
         example_points = []
 
-        for interval in reseg_example.event_intervals:
-            points = get_raw_signal(read, interval, norm_method)
+        for event_interval in reseg_example.event_intervals:
+            points = signal[event_interval.start: event_interval.end]
             example_points.append(points)
 
         example_points = np.concatenate(example_points)
@@ -254,8 +254,8 @@ def create_arguments() -> argparse.Namespace:
     parser.add_argument('--reference', type=str, required=True,
                         help='Path to the reference file')
 
-    parser.add_argument('--norm_method', type=str, default=None,
-                        help='Function name to use for signal normalization (default: None)')
+    parser.add_argument('--norm_method', type=str, default='standardization',
+                        help='Function name to use for signal normalization (default: standardization)')
 
     parser.add_argument('--mapq', type=int, default=10,
                         help='Mapping quality threshold (default: 10)')

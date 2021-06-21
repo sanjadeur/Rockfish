@@ -17,7 +17,6 @@ class Remapper:
                  window: int = 8,
                  bed_pos: Optional[BEDPos] = None):
 
-        self.basecall_data = basecall_data
         self.reference_file = reference_file
         self.mapq = mapq
         self.window = window
