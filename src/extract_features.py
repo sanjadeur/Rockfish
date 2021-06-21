@@ -14,7 +14,7 @@ from utils.bed_processing import bed_filter_factory, extract_bed_positions
 from utils.writer import BinaryWriter
 
 from processor.basecall import create_file_queue, start_producers, GuppyRead
-from processor.custom_processor import CustomProcessor
+from processor.remapper import Remapper
 from processor.util import Interval
 
 
@@ -117,23 +117,23 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
     :param header_path: Path to the generated header
     :return: FeaturesData object if at least one example is present, otherwise None
     """
+    processor = Remapper(reference, mapq, motif, index, window,
+                         bed_data[1] if bed_data is not None else None)
+
     with BinaryWriter(str(data_path), str(header_path)) as writer:
         while True:
-            basecall_data = read_queue.get()  # timeout=10 if needed
+            basecall_data = read_queue.get()
             if basecall_data is None:
                 break
 
-            print(basecall_data.read.read_id, "- basecalled")
+            # print(basecall_data.read.read_id, "- basecalled")
 
-            processor = CustomProcessor(basecall_data, reference, mapq, motif, index, window,
-                                        bed_data[1] if bed_data is not None else None)
-
-            resegmentation_data = processor.process()
+            resegmentation_data = processor.process(basecall_data)
             if not resegmentation_data:
-                print(basecall_data.read.read_id, "- reseg_data is None")
+                # print(basecall_data.read.read_id, "- reseg_data is None")
                 continue
 
-            print(basecall_data.read.read_id, "- resegmented")
+            # print(basecall_data.read.read_id, "- resegmented")
 
             examples = generate_data(basecall_data.read, resegmentation_data, norm_method)
             if not examples:
@@ -151,7 +151,7 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
                     error_callback(basecall_data.read.read_id, e)
                     # error_files += 1
 
-            print(basecall_data.read.read_id, "- written")
+            # print(basecall_data.read.read_id, "- written")
 
 
 def error_callback(path, exception):
@@ -273,10 +273,10 @@ def create_arguments() -> argparse.Namespace:
                         help='Label to store for the given examples (default: None)')
 
     parser.add_argument('--n_producers', type=int, default=1,
-                        help='Number of producers used for data generation (default: 1)')
+                        help='Number of producers used for basecalling the input data (default: 1)')
 
     parser.add_argument('--n_processors', type=int, default=1,
-                        help='Number of processors used for data processing (default: 1)')
+                        help='Number of processors used for processing the basecalled data (default: 1)')
 
     # Bisulfite BED file arguments
     parser.add_argument('--bed_path', type=Path, default=None,

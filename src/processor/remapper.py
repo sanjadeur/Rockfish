@@ -8,18 +8,17 @@ from .basecall import BasecallData, sequence_to_raw
 from .util import Interval, BEDPos, ResegmentationData
 
 
-class CustomProcessor:
+class Remapper:
     def __init__(self,
-                 basecall_data: BasecallData,
                  reference_file: str,
                  mapq: int = 0,
                  motif: str = 'CG',
                  index: int = 0,
                  window: int = 8,
                  bed_pos: Optional[BEDPos] = None):
+
         self.basecall_data = basecall_data
         self.reference_file = reference_file
-
         self.mapq = mapq
         self.window = window
 
@@ -122,8 +121,8 @@ class CustomProcessor:
 
         return signal_intervals
 
-    def process(self) -> Optional[List[ResegmentationData]]:
-        alignment = self.align(self.basecall_data.seq)
+    def process(self, basecall_data: BasecallData) -> Optional[List[ResegmentationData]]:
+        alignment = self.align(basecall_data.seq)
         if not alignment:
             return None
 
@@ -131,10 +130,10 @@ class CustomProcessor:
         if not relevant_motif_positions:
             return None
 
-        seq_to_raw, raw_start_idx = sequence_to_raw(self.basecall_data)
+        seq_to_raw, raw_start_idx = sequence_to_raw(basecall_data)
 
-        signal_intervals, deletion_idx = CustomProcessor.resolve_insertions(alignment, seq_to_raw)
-        signal_intervals = CustomProcessor.resolve_deletions(signal_intervals, deletion_idx)
+        signal_intervals, deletion_idx = Remapper.resolve_insertions(alignment, seq_to_raw)
+        signal_intervals = Remapper.resolve_deletions(signal_intervals, deletion_idx)
 
         resegmentation_data = []
 
@@ -147,6 +146,8 @@ class CustomProcessor:
 
             event_intervals = signal_intervals[motif_position - self.window: motif_position + self.window + 1]
             event_lens = np.array([interval.end - interval.start for interval in event_intervals])
+            if np.all((event_lens == 0)):  # Skip regions containing 0 signal points
+                continue
 
             reference = get_reference(self.reference_file, alignment.ctg)
             region = reference[position - self.window: position + self.window + 1]

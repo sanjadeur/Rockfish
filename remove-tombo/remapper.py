@@ -145,8 +145,8 @@ def resolve_deletions(signal_intervals: List[Interval], deletion_idx: List[Inter
     return signal_intervals
 
 
-def custom_processor(basecall_data: Tuple[ReadData, CalledReadData], aligner: mappy.Aligner, reference_file: str,
-                     motif_positions: Dict[str, Tuple[Set[int], Set[int]]], mapq: int, window: int) -> ResegmentationData:
+def remapper(basecall_data: Tuple[ReadData, CalledReadData], aligner: mappy.Aligner, reference_file: str,
+             motif_positions: Dict[str, Tuple[Set[int], Set[int]]], mapq: int, window: int) -> ResegmentationData:
     read, called = basecall_data
 
     alignment = align(aligner, called.seq, mapq)
@@ -173,10 +173,13 @@ def custom_processor(basecall_data: Tuple[ReadData, CalledReadData], aligner: ma
 
         event_intervals = signal_intervals[motif_position - window: motif_position + window + 1]
         event_lens = np.array([interval.end - interval.start for interval in event_intervals])
+        if np.all((event_lens == 0)):  # Skip regions containing 0 signal points
+            continue
 
         reference = get_reference(reference_file, alignment.ctg)
         region = reference[position - window: position + window + 1]
         bases = region if alignment.strand == 1 else mappy.revcomp(region)
+        bases = bases.upper()
 
         assert len(event_intervals) == len(event_lens) == len(bases)
 
@@ -193,14 +196,14 @@ def process_data(input_path: str, recursive: bool, reference_file: str,
     motif_positions = get_motif_positions(reference_file, motif, index)
 
     for basecall_data in tqdm(basecall(fast5_files)):
-        resegmentation_data = custom_processor(basecall_data, aligner, reference_file, motif_positions, mapq, window)
+        resegmentation_data = remapper(basecall_data, aligner, reference_file, motif_positions, mapq, window)
 
         if resegmentation_data:
             print(resegmentation_data)
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Custom processor')
+    parser = argparse.ArgumentParser(description='Remapper')
 
     parser.add_argument('-i', '--input_path', type=str, required=True,
                         help='Path to the input file or folder containing FAST5 files')

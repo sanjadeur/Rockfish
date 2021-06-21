@@ -183,10 +183,12 @@ class BinaryWriter(DataWriter):
         # Add number of examples to the beginning of header file
         with io.open(dest_header_path, 'rb+') as f:
             header = np.fromfile(f, dtype=np.uint16)
-            no_of_examples = len(header)
-            header = np.concatenate(([no_of_examples], header))
+            no_of_examples = np.array([len(header)], dtype=np.uint32)
+            # print("No of examples:", no_of_examples)
+
             f.seek(0)
-            f.write(header.astype('uint16').tobytes())
+            f.write(no_of_examples.tobytes())
+            f.write(header.tobytes())
 
         # Concatenate header and data file to a final data.bin file
         final_data_path = Path(kwargs['path'], 'data.bin')
