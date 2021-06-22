@@ -15,11 +15,13 @@ class Remapper:
                  motif: str = 'CG',
                  index: int = 0,
                  window: int = 8,
+                 del_method: str = 'concatenate_and_divide',
                  bed_pos: Optional[BEDPos] = None):
 
         self.reference_file = reference_file
         self.mapq = mapq
         self.window = window
+        self.del_method = del_method
 
         self.aligner = make_aligner(reference_file)
         self.motif_positions = get_motif_positions(reference_file, motif, index, bed_pos)
@@ -98,21 +100,44 @@ class Remapper:
         return signal_intervals, deletion_idx
 
     @staticmethod
-    def resolve_deletions(signal_intervals: List[Interval], deletion_idx: List[Interval]) -> List[Interval]:
-        for idx_st, idx_en in deletion_idx:
-            sig_st, sig_en = signal_intervals[idx_st - 1].start, signal_intervals[idx_en].end
-            intervals = np.array_split(range(sig_st, sig_en), idx_en - idx_st + 2)
+    def resolve_deletions(signal_intervals: List[Interval], deletion_idx: List[Interval],
+                          del_method: str = 'concatenate_and_divide') -> List[Interval]:
+        for del_st, del_en in deletion_idx:
+            left = signal_intervals[del_st - 1]
+            right = signal_intervals[del_en]
+
+            if del_method == 'concatenate_and_divide':
+                sig_st, sig_en = left.start, right.end
+
+            elif del_method == 'greatest_neighbour':
+                left_len = left.end - left.start
+                right_len = right.end - right.start
+                del_len = del_en - del_st
+
+                if left_len > right_len and left_len > del_len:
+                    sig_st, sig_en = left.start, left.end
+
+                elif right_len > left_len and right_len > del_len:
+                    sig_st, sig_en = right.start, right.end
+
+                else:  # left_len == right_len or there is not enough signal points -> use 'concatenate_and_divide'
+                    sig_st, sig_en = left.start, right.end
+
+            else:
+                raise ValueError(f"Deletion method '{del_method}' doesn't exist.")
+
+            intervals = np.array_split(range(sig_st, sig_en), del_en - del_st + 2)
 
             if len(intervals[-1]) == 0:  # If there is not enough signal points to divide among bases
                 while len(intervals[-1]) == 0:
                     intervals.pop(-1)
                 interval = intervals.pop(-1)
-                signal_intervals[idx_en] = Interval(interval[0], interval[-1] + 1)  # Base to the right must have > 0 signal points
+                signal_intervals[del_en] = Interval(interval[0], interval[-1] + 1)  # Base to the right must have > 0 signal points
 
-            for i in range(idx_st - 1, idx_en + 1):
+            for i in range(del_st - 1, del_en + 1):
                 if len(intervals) == 0:  # Bases in the middle (deletions) which have 0 signal points
-                    if i < idx_en:
-                        signal_intervals[i] = Interval(signal_intervals[idx_en].start, signal_intervals[idx_en].start)
+                    if i < del_en:
+                        signal_intervals[i] = Interval(signal_intervals[del_en].start, signal_intervals[del_en].start)
                     continue
 
                 interval = intervals.pop(0)
@@ -132,7 +157,7 @@ class Remapper:
         seq_to_raw, raw_start_idx = sequence_to_raw(basecall_data)
 
         signal_intervals, deletion_idx = Remapper.resolve_insertions(alignment, seq_to_raw)
-        signal_intervals = Remapper.resolve_deletions(signal_intervals, deletion_idx)
+        signal_intervals = Remapper.resolve_deletions(signal_intervals, deletion_idx, self.del_method)
 
         resegmentation_data = []
 

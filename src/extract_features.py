@@ -13,9 +13,8 @@ from utils.models import *
 from utils.bed_processing import bed_filter_factory, extract_bed_positions
 from utils.writer import BinaryWriter
 
-from processor.basecall import create_file_queue, start_producers, GuppyRead
-from processor.remapper import Remapper
-from processor.util import Interval
+from remapper.basecall import create_file_queue, start_producers, GuppyRead
+from remapper.remapper import Remapper
 
 
 def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
@@ -33,7 +32,8 @@ def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
         'motif': args.motif,
         'index': args.index,
         'window': args.window,
-        'label': args.label
+        'label': args.label,
+        'del_method': args.del_method
     }
 
     return info_args
@@ -97,7 +97,7 @@ def generate_data(read: GuppyRead,
 
 def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], reference: str,
                  norm_method: str, mapq: int, motif: str, index: int, window: int,
-                 label: Optional[int], bed_data: Optional[BEDData],
+                 label: Optional[int], del_method: str, bed_data: Optional[BEDData],
                  data_path: str, header_path: int) -> Optional[FeaturesData]:
     """ This function processes the given read to generate data.
 
@@ -112,12 +112,13 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
     :param index: Index of the central position in the motif
     :param window: Size of left and right windows around central position
     :param label: Label is 0 for unmodified reads, and 1 for modified ones
+    :param del_method: Deletion method used for resolving deletions
     :param bed_data: Positions used for filtering motif positions
     :param data_path: Path to the generated output data
     :param header_path: Path to the generated header
     :return: FeaturesData object if at least one example is present, otherwise None
     """
-    processor = Remapper(reference, mapq, motif, index, window,
+    processor = Remapper(reference, mapq, motif, index, window, del_method,
                          bed_data[1] if bed_data is not None else None)
 
     with BinaryWriter(str(data_path), str(header_path)) as writer:
@@ -162,11 +163,11 @@ def error_callback(path, exception):
 
 def worker_process_reads(read_queue: mp.Queue, processed_queue: mp.Queue, reference: str,
                          norm_method: str, mapq: int, motif: str, index: int, window: int,
-                         label: Optional[int], bed_data: Optional[BEDData],
+                         label: Optional[int], del_method: str, bed_data: Optional[BEDData],
                          output_path: str, n_processors: int) -> List[mp.Process]:
     processors = []
 
-    args = (read_queue, processed_queue, reference, norm_method, mapq, motif, index, window, label, bed_data)
+    args = (read_queue, processed_queue, reference, norm_method, mapq, motif, index, window, label, del_method, bed_data)
     for i in range(n_processors):
         p_args = args + (Path(output_path, f'{i + 1}.data.bin.tmp'), Path(output_path, f'{i + 1}.header.bin.tmp'))
         p = mp.Process(target=process_read, args=p_args, daemon=True)
@@ -220,7 +221,7 @@ def process_data(args: argparse.Namespace) -> None:
     processed_queue = None
     processors = worker_process_reads(read_queue, processed_queue, args.reference,
                                       args.norm_method, args.mapq, args.motif, args.index, args.window,
-                                      args.label, bed_data, args.output_path, args.n_processors)
+                                      args.label, args.del_method, bed_data, args.output_path, args.n_processors)
 
     tqdm_with_time('Extracting features', last_action_time)
 
@@ -271,6 +272,9 @@ def create_arguments() -> argparse.Namespace:
 
     parser.add_argument('--label', type=int, default=None,
                         help='Label to store for the given examples (default: None)')
+
+    parser.add_argument('--del_method', type=str, default='concatenate_and_divide',
+                        help='Deletion method to use for resolving deletions (default: concatenate_and_divide)')
 
     parser.add_argument('--n_producers', type=int, default=1,
                         help='Number of producers used for basecalling the input data (default: 1)')
