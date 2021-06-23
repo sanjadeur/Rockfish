@@ -1,20 +1,19 @@
+import argparse
+import multiprocessing as mp
 import sys
 import time
+import traceback
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
-from pathlib import Path
-import traceback
-import multiprocessing as mp
-import argparse
 
 from typing import List, Optional
 
-from utils.models import *
-from utils.bed_processing import bed_filter_factory, extract_bed_positions
-from utils.writer import BinaryWriter
-
 from remapper.basecall import create_file_queue, start_producers, GuppyRead
 from remapper.remapper import Remapper
+from utils.bed_processing import bed_filter_factory, extract_bed_positions
+from utils.models import *
+from utils.writer import BinaryWriter
 
 
 def get_info_args(args: argparse.Namespace) -> Dict[str, Any]:
@@ -95,9 +94,9 @@ def generate_data(read: GuppyRead,
     return all_examples
 
 
-def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], reference: str,
-                 norm_method: str, mapq: int, motif: str, index: int, window: int,
-                 label: Optional[int], del_method: str, bed_data: Optional[BEDData],
+def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue],
+                 remapper: Remapper, norm_method: str,
+                 label: Optional[int], bed_data: Optional[BEDData],
                  data_path: str, header_path: int) -> Optional[FeaturesData]:
     """ This function processes the given read to generate data.
 
@@ -105,22 +104,14 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
 
     :param read_queue: Queue containing basecalled reads
     :param processed_queue: Queue containing processed reads
-    :param reference: Path to the reference file
+    :param remapper: Instance of the Remapper class
     :param norm_method: Signal normalization method
-    :param mapq: Mapping quality threshold
-    :param motif: Motif for which positions will be extracted
-    :param index: Index of the central position in the motif
-    :param window: Size of left and right windows around central position
     :param label: Label is 0 for unmodified reads, and 1 for modified ones
-    :param del_method: Deletion method used for resolving deletions
     :param bed_data: Positions used for filtering motif positions
     :param data_path: Path to the generated output data
     :param header_path: Path to the generated header
     :return: FeaturesData object if at least one example is present, otherwise None
     """
-    processor = Remapper(reference, mapq, motif, index, window, del_method,
-                         bed_data[1] if bed_data is not None else None)
-
     with BinaryWriter(str(data_path), str(header_path)) as writer:
         while True:
             basecall_data = read_queue.get()
@@ -129,10 +120,11 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
 
             # print(basecall_data.read.read_id, "- basecalled")
 
-            resegmentation_data = processor.process(basecall_data)
-            if not resegmentation_data:
+            remapper_data = remapper.process(basecall_data)
+            if not remapper_data:
                 # print(basecall_data.read.read_id, "- reseg_data is None")
                 continue
+            resegmentation_data, align_data = remapper_data
 
             # print(basecall_data.read.read_id, "- resegmented")
 
@@ -140,10 +132,9 @@ def process_read(read_queue: mp.Queue, processed_queue: Optional[mp.Queue], refe
             if not examples:
                 continue
 
-            align_data = processor.align(basecall_data.seq)
             strand = Strand.strand_from_str('+' if align_data.strand == 1 else '-')
-
             result = FeaturesData(align_data.ctg, strand, basecall_data.read.read_id, examples)
+
             if result is not None:
                 try:
                     writer.write_data(result, bed_data[0] if bed_data is not None else None, label)
@@ -167,7 +158,10 @@ def worker_process_reads(read_queue: mp.Queue, processed_queue: mp.Queue, refere
                          output_path: str, n_processors: int) -> List[mp.Process]:
     processors = []
 
-    args = (read_queue, processed_queue, reference, norm_method, mapq, motif, index, window, label, del_method, bed_data)
+    remapper = Remapper(reference, mapq, motif, index, window, del_method,
+                        bed_data[1] if bed_data is not None else None)
+
+    args = (read_queue, processed_queue, remapper, norm_method, label, bed_data)
     for i in range(n_processors):
         p_args = args + (Path(output_path, f'{i + 1}.data.bin.tmp'), Path(output_path, f'{i + 1}.header.bin.tmp'))
         p = mp.Process(target=process_read, args=p_args, daemon=True)

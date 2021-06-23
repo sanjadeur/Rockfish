@@ -1,9 +1,10 @@
 import mappy
 import numpy as np
+from Bio import SeqIO
 
 from typing import Tuple, Set, List, Optional
 
-from .alignment import make_aligner, get_reference, get_motif_positions
+from .alignment import make_aligner, get_motif_positions
 from .basecall import BasecallData, sequence_to_raw
 from .util import Interval, BEDPos, ResegmentationData
 
@@ -24,9 +25,10 @@ class Remapper:
         self.del_method = del_method
 
         self.aligner = make_aligner(reference_file)
-        self.motif_positions = get_motif_positions(reference_file, motif, index, bed_pos)
+        self.reference = SeqIO.to_dict(SeqIO.parse(reference_file, 'fasta'))
+        self.motif_positions = get_motif_positions(self.reference, motif, index, bed_pos)
 
-    def align(self, query: str) -> Optional[mappy.Alignment]:
+    def _align(self, query: str) -> Optional[mappy.Alignment]:
         for hit in self.aligner.map(query):  # Traverse alignments
             if hit.is_primary:  # Check if the alignment is primary
                 if hit.mapq < self.mapq:  # Check if the mapping quality is below set threshold
@@ -145,8 +147,8 @@ class Remapper:
 
         return signal_intervals
 
-    def process(self, basecall_data: BasecallData) -> Optional[List[ResegmentationData]]:
-        alignment = self.align(basecall_data.seq)
+    def process(self, basecall_data: BasecallData) -> Optional[Tuple[List[ResegmentationData], mappy.Alignment]]:
+        alignment = self._align(basecall_data.seq)
         if not alignment:
             return None
 
@@ -173,7 +175,7 @@ class Remapper:
             if np.all((event_lens == 0)):  # Skip regions containing 0 signal points
                 continue
 
-            reference = get_reference(self.reference_file, alignment.ctg)
+            reference = str(self.reference[alignment.ctg].seq)
             region = reference[position - self.window: position + self.window + 1]
             bases = region if alignment.strand == 1 else mappy.revcomp(region)
             bases = bases.upper()
@@ -182,4 +184,4 @@ class Remapper:
 
             resegmentation_data.append(ResegmentationData(position, event_intervals, event_lens, bases))
 
-        return resegmentation_data
+        return resegmentation_data, alignment

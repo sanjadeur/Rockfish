@@ -15,12 +15,11 @@ def make_aligner(reference_file: str) -> mappy.Aligner:
     return aligner
 
 
-def get_motif_positions(reference_file: str, motif: str, index: int,
+def get_motif_positions(reference: SeqIO, motif: str, index: int,
                         bed_pos: Optional[BEDPos]) -> Dict[str, Tuple[Set[int], Set[int]]]:
-    chromosomes = SeqIO.to_dict(SeqIO.parse(reference_file, 'fasta'))
     motif_positions = dict()
 
-    for chromosome, record in chromosomes.items():
+    for chromosome, record in reference.items():
         reference = str(record.seq)
 
         # Forward strand
@@ -42,9 +41,3 @@ def get_motif_positions(reference_file: str, motif: str, index: int,
         motif_positions[chromosome] = fwd_pos, rev_pos
 
     return motif_positions
-
-
-def get_reference(reference_file: str, contig: str) -> str:
-    chromosomes = SeqIO.to_dict(SeqIO.parse(reference_file, 'fasta'))
-
-    return str(chromosomes[contig].seq)
